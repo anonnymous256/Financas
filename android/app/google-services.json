@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "450487680717",
+    "project_id": "financas-e262b",
+    "storage_bucket": "financas-e262b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:450487680717:android:a7bd460af2c6194a4c7384",
+        "android_client_info": {
+          "package_name": "com.example.financeiro"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAyEPfjCARIkXERkiFL0KK7oaE-mhApNog"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:450487680717:android:386223f8c281cd564c7384",
+        "android_client_info": {
+          "package_name": "com.financas.financas"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAyEPfjCARIkXERkiFL0KK7oaE-mhApNog"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
