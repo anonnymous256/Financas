@@ -474,15 +474,33 @@ Future<void> showMovementForm(
   BuildContext context, {
   required String kind,
   FinanceTransaction? existing,
+  bool variableIncome = false,
+  RecurringItem? variableTemplate,
 }) {
-  return showAppForm(context, child: MovementForm(kind: kind, existing: existing));
+  return showAppForm(
+    context,
+    child: MovementForm(
+      kind: kind,
+      existing: existing,
+      startAsVariable: variableIncome || variableTemplate != null,
+      variableTemplate: variableTemplate,
+    ),
+  );
 }
 
 class MovementForm extends ConsumerStatefulWidget {
-  const MovementForm({super.key, required this.kind, this.existing});
+  const MovementForm({
+    super.key,
+    required this.kind,
+    this.existing,
+    this.startAsVariable = false,
+    this.variableTemplate,
+  });
 
   final String kind;
   final FinanceTransaction? existing;
+  final bool startAsVariable;
+  final RecurringItem? variableTemplate;
 
   @override
   ConsumerState<MovementForm> createState() => _MovementFormState();
@@ -490,21 +508,44 @@ class MovementForm extends ConsumerStatefulWidget {
 
 class _MovementFormState extends ConsumerState<MovementForm> {
   final _formKey = GlobalKey<FormState>();
-  late final _description = TextEditingController(text: widget.existing?.description ?? '');
+  late final _description = TextEditingController(text: widget.variableTemplate?.name ?? widget.existing?.description ?? '');
   late final _amount = TextEditingController(
     text: widget.existing == null ? '' : (widget.existing!.amountCents / 100).toStringAsFixed(2).replaceAll('.', ','),
   );
-  late final _notes = TextEditingController(text: widget.existing?.notes ?? '');
+  late final _notes = TextEditingController(text: widget.variableTemplate?.notes ?? widget.existing?.notes ?? '');
   late final _installments = TextEditingController(text: '1');
+  late final _due = TextEditingController(text: '${widget.variableTemplate?.dueDay ?? DateTime.now().day.clamp(1, 28)}');
   late DateTime _date = widget.existing?.date ?? DateTime.now();
   late String _status = widget.existing?.status ?? 'paid';
-  late String? _categoryId = widget.existing?.categoryId;
-  late String? _accountId = widget.existing?.accountId;
+  late String? _categoryId = widget.variableTemplate?.categoryId ?? widget.existing?.categoryId;
+  late String? _accountId = widget.variableTemplate?.accountId ?? widget.existing?.accountId;
   String? _cardId;
   late String _method = widget.existing?.paymentMethod ?? (widget.kind == TxKind.income ? 'pix' : 'pix');
   var _recurring = false;
-  var _frequency = 'monthly';
+  late String _frequency = widget.variableTemplate?.frequency ?? 'monthly';
+  late bool _variable = widget.startAsVariable;
+  late bool _active = widget.variableTemplate?.active ?? true;
   var _loading = false;
+
+  bool get _isVariableIncome => widget.kind == TxKind.income && widget.existing == null && _variable;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.kind == TxKind.income && widget.variableTemplate == null) {
+      _recurring = true;
+    }
+  }
+
+  @override
+  void dispose() {
+    _description.dispose();
+    _amount.dispose();
+    _notes.dispose();
+    _installments.dispose();
+    _due.dispose();
+    super.dispose();
+  }
 
   bool get _isCard => widget.kind == TxKind.expense && _method == 'card' && widget.existing == null;
 
@@ -544,6 +585,21 @@ class _MovementFormState extends ConsumerState<MovementForm> {
             );
             return;
           }
+          if (widget.kind == TxKind.income && _isVariableIncome) {
+            FinanceEngine.upsertVariableIncome(
+              bundle,
+              id: widget.variableTemplate?.id,
+              name: _description.text,
+              categoryId: _categoryId!,
+              accountId: _accountId!,
+              dueDay: int.tryParse(_due.text) ?? 1,
+              frequency: _frequency,
+              notes: _notes.text,
+              active: _active,
+              createdAt: widget.variableTemplate?.createdAt,
+            );
+            return;
+          }
           if (widget.kind == TxKind.income) {
             FinanceEngine.addIncome(
               bundle,
@@ -554,6 +610,8 @@ class _MovementFormState extends ConsumerState<MovementForm> {
               accountId: _accountId!,
               notes: _notes.text,
               status: _status,
+              recurring: _recurring,
+              frequency: 'monthly',
               allowDuplicate: allowDuplicate,
             );
           } else {
@@ -589,11 +647,15 @@ class _MovementFormState extends ConsumerState<MovementForm> {
     _categoryId ??= filtered.isEmpty ? null : filtered.first.id;
     _accountId ??= accounts.isEmpty ? null : accounts.first.id;
     _cardId ??= cards.isEmpty ? null : cards.first.id;
-    final title = widget.existing != null
-        ? 'Editar movimentação'
-        : widget.kind == TxKind.income
-            ? 'Nova receita'
-            : 'Nova despesa';
+    final title = widget.variableTemplate != null
+        ? 'Editar receita variável'
+        : _isVariableIncome
+            ? 'Receita variável'
+            : widget.existing != null
+                ? 'Editar movimentação'
+                : widget.kind == TxKind.income
+                    ? 'Nova receita'
+                    : 'Nova despesa';
     return FormScaffold(
       title: title,
       loading: _loading,
@@ -602,11 +664,34 @@ class _MovementFormState extends ConsumerState<MovementForm> {
         key: _formKey,
         child: Column(
           children: [
-            TextFormField(controller: _description, decoration: const InputDecoration(labelText: 'Descrição'), validator: (value) => value == null || value.trim().isEmpty ? 'Informe a descrição.' : null),
-            const SizedBox(height: 12),
-            TextFormField(controller: _amount, decoration: const InputDecoration(labelText: 'Valor', prefixText: 'R\$ '), validator: validatePositive),
-            const SizedBox(height: 12),
-            DateField(label: 'Data', value: _date, onChanged: (value) => setState(() => _date = value)),
+            TextFormField(
+              controller: _description,
+              decoration: InputDecoration(labelText: _isVariableIncome ? 'Nome da receita' : 'Descrição'),
+              validator: (value) => value == null || value.trim().isEmpty ? 'Informe a descrição.' : null,
+            ),
+            if (widget.kind == TxKind.income && widget.existing == null && widget.variableTemplate == null) ...[
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Receita variável'),
+                subtitle: const Text('Para mensalidades e recebimentos com valor diferente a cada vez.'),
+                value: _variable,
+                onChanged: (value) => setState(() => _variable = value),
+              ),
+            ],
+            if (_isVariableIncome)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Text(
+                  'Cadastre a receita uma vez. Depois, lance cada mensalidade com o valor que você recebeu.',
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+                ),
+              ),
+            if (!_isVariableIncome) ...[
+              const SizedBox(height: 12),
+              TextFormField(controller: _amount, decoration: const InputDecoration(labelText: 'Valor', prefixText: 'R\$ '), validator: validatePositive),
+              const SizedBox(height: 12),
+              DateField(label: 'Data', value: _date, onChanged: (value) => setState(() => _date = value)),
+            ],
             const SizedBox(height: 12),
             DropdownButtonFormField<String>(
               initialValue: _categoryId,
@@ -654,7 +739,17 @@ class _MovementFormState extends ConsumerState<MovementForm> {
                 },
               ),
             ],
-            if (widget.existing == null && !_isCard) ...[
+            if (widget.kind == TxKind.income && widget.existing == null && !_isVariableIncome) ...[
+              const SizedBox(height: 8),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Repete todo mês'),
+                subtitle: const Text('Na virada do mês entra de novo como pendente, com o mesmo valor.'),
+                value: _recurring,
+                onChanged: (value) => setState(() => _recurring = value),
+              ),
+            ],
+            if (widget.kind == TxKind.expense && widget.existing == null && !_isCard) ...[
               const SizedBox(height: 8),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
@@ -670,16 +765,47 @@ class _MovementFormState extends ConsumerState<MovementForm> {
                   onChanged: (value) => setState(() => _frequency = value ?? _frequency),
                 ),
             ],
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue: _status,
-              decoration: const InputDecoration(labelText: 'Status'),
-              items: const [
-                DropdownMenuItem(value: 'paid', child: Text('Pago')),
-                DropdownMenuItem(value: 'pending', child: Text('Pendente')),
-              ],
-              onChanged: _isCard ? null : (value) => setState(() => _status = value ?? _status),
-            ),
+            if (_isVariableIncome) ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _frequency,
+                decoration: const InputDecoration(labelText: 'Frequência'),
+                items: frequencyLabels.entries.map((entry) => DropdownMenuItem(value: entry.key, child: Text(entry.value))).toList(),
+                onChanged: (value) => setState(() => _frequency = value ?? _frequency),
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _due,
+                decoration: InputDecoration(labelText: _frequency == 'weekly' ? 'Dia da semana (1 a 7)' : 'Dia em que costuma receber'),
+                keyboardType: TextInputType.number,
+                validator: (value) {
+                  final day = int.tryParse(value ?? '');
+                  final max = _frequency == 'weekly' ? 7 : 28;
+                  if (day == null || day < 1 || day > max) return 'Use um dia entre 1 e $max.';
+                  return null;
+                },
+              ),
+              if (widget.variableTemplate != null)
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Ativa'),
+                  subtitle: const Text('Pausada, ela deixa de lembrar o lançamento.'),
+                  value: _active,
+                  onChanged: (value) => setState(() => _active = value),
+                ),
+            ],
+            if (!_isVariableIncome) ...[
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: _status,
+                decoration: const InputDecoration(labelText: 'Status'),
+                items: const [
+                  DropdownMenuItem(value: 'paid', child: Text('Pago')),
+                  DropdownMenuItem(value: 'pending', child: Text('Pendente')),
+                ],
+                onChanged: _isCard ? null : (value) => setState(() => _status = value ?? _status),
+              ),
+            ],
             const SizedBox(height: 12),
             TextFormField(controller: _notes, decoration: const InputDecoration(labelText: 'Observação'), maxLines: 3),
           ],
@@ -946,6 +1072,9 @@ class _RecurringFormState extends ConsumerState<RecurringForm> {
       notes: widget.existing?.notes ?? '',
       createdAt: widget.existing?.createdAt ?? now,
       updatedAt: now,
+      kind: widget.existing?.kind ?? 'expense',
+      variable: widget.existing?.variable ?? false,
+      startsOn: widget.existing?.startsOn,
     );
     await _guard(context, () => ref.read(financeActionsProvider).run((bundle) {
       FinanceEngine.upsertRecurring(bundle, item);
@@ -1289,6 +1418,118 @@ class _PayInvoiceFormState extends ConsumerState<PayInvoiceForm> {
             ],
             const SizedBox(height: 12),
             DateField(label: 'Data do pagamento', value: _date, onChanged: (value) => setState(() => _date = value)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Future<void> showVariablePaymentForm(BuildContext context, RecurringItem item) {
+  return showAppForm(context, child: VariablePaymentForm(item: item));
+}
+
+class VariablePaymentForm extends ConsumerStatefulWidget {
+  const VariablePaymentForm({super.key, required this.item});
+
+  final RecurringItem item;
+
+  @override
+  ConsumerState<VariablePaymentForm> createState() => _VariablePaymentFormState();
+}
+
+class _VariablePaymentFormState extends ConsumerState<VariablePaymentForm> {
+  final _formKey = GlobalKey<FormState>();
+  final _amount = TextEditingController();
+  final _who = TextEditingController();
+  DateTime _date = DateTime.now();
+  var _status = 'paid';
+  var _loading = false;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _who.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save({bool allowDuplicate = false}) async {
+    if (!_formKey.currentState!.validate()) return;
+    setState(() => _loading = true);
+    try {
+      await _guard(context, () async {
+        final who = _who.text.trim();
+        await ref.read(financeActionsProvider).run((bundle) {
+          final current = bundle.recurring.where((entry) => entry.id == widget.item.id).firstOrNull;
+          if (current == null || !current.variable) {
+            throw const AppException('Receita variável não encontrada.');
+          }
+          FinanceEngine.addIncome(
+            bundle,
+            description: who.isEmpty ? current.name : '${current.name} • $who',
+            amountCents: parseMoney(_amount.text),
+            date: _date,
+            categoryId: current.categoryId,
+            accountId: current.accountId!,
+            notes: who,
+            status: _status,
+            allowDuplicate: allowDuplicate,
+            recurringId: current.id,
+            periodKey: FinanceEngine.periodKeyFor(current, _date),
+          );
+        });
+      });
+    } on _DuplicateAllowed {
+      if (mounted) await _save(allowDuplicate: true);
+    }
+    if (mounted) setState(() => _loading = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FormScaffold(
+      title: 'Lançar mensalidade',
+      loading: _loading,
+      submitLabel: 'Lançar',
+      onSubmit: _save,
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.item.name, style: const TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(height: 8),
+            Text(
+              'Informe o valor desta mensalidade. Você pode lançar várias no mesmo mês.',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _amount,
+              decoration: const InputDecoration(labelText: 'Valor recebido', prefixText: r'R$ '),
+              keyboardType: TextInputType.number,
+              validator: validatePositive,
+            ),
+            const SizedBox(height: 12),
+            DateField(label: 'Data', value: _date, onChanged: (value) => setState(() => _date = value)),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _who,
+              decoration: const InputDecoration(
+                labelText: 'Identificação (opcional)',
+                hintText: 'Ex.: aluno ou cliente',
+              ),
+            ),
+            const SizedBox(height: 12),
+            DropdownButtonFormField<String>(
+              initialValue: _status,
+              decoration: const InputDecoration(labelText: 'Status'),
+              items: const [
+                DropdownMenuItem(value: 'paid', child: Text('Recebido')),
+                DropdownMenuItem(value: 'pending', child: Text('A receber')),
+              ],
+              onChanged: (value) => setState(() => _status = value ?? _status),
+            ),
           ],
         ),
       ),

@@ -20,6 +20,13 @@ class JsonMap {
   DateTime date(String key) =>
       DateTime.fromMillisecondsSinceEpoch(integer(key, DateTime.now().millisecondsSinceEpoch));
 
+  DateTime? optionalDate(String key) {
+    final value = data[key];
+    if (value == null) return null;
+    if (value is num) return DateTime.fromMillisecondsSinceEpoch(value.toInt());
+    return null;
+  }
+
   String? optional(String key) {
     final value = data[key];
     if (value == null || value.toString().isEmpty) return null;
@@ -52,6 +59,7 @@ class UserProfile {
     required this.notifyLowBalance,
     required this.notifyGoals,
     this.spendingAccountId = '',
+    this.fixedIncomesAdopted = false,
   });
 
   factory UserProfile.create({
@@ -102,6 +110,7 @@ class UserProfile {
       notifyLowBalance: map.boolean('notifyLowBalance', true),
       notifyGoals: map.boolean('notifyGoals', true),
       spendingAccountId: map.str('spendingAccountId'),
+      fixedIncomesAdopted: map.boolean('fixedIncomesAdopted'),
     );
   }
 
@@ -123,6 +132,7 @@ class UserProfile {
   final bool notifyLowBalance;
   final bool notifyGoals;
   final String spendingAccountId;
+  final bool fixedIncomesAdopted;
 
   Map<String, dynamic> toJson() => {
         'userId': userId,
@@ -143,6 +153,7 @@ class UserProfile {
         'notifyLowBalance': notifyLowBalance,
         'notifyGoals': notifyGoals,
         'spendingAccountId': spendingAccountId,
+        'fixedIncomesAdopted': fixedIncomesAdopted,
       };
 
   UserProfile copyWith({
@@ -162,6 +173,7 @@ class UserProfile {
     bool? notifyLowBalance,
     bool? notifyGoals,
     String? spendingAccountId,
+    bool? fixedIncomesAdopted,
   }) {
     return UserProfile(
       userId: userId,
@@ -182,6 +194,7 @@ class UserProfile {
       notifyLowBalance: notifyLowBalance ?? this.notifyLowBalance,
       notifyGoals: notifyGoals ?? this.notifyGoals,
       spendingAccountId: spendingAccountId ?? this.spendingAccountId,
+      fixedIncomesAdopted: fixedIncomesAdopted ?? this.fixedIncomesAdopted,
     );
   }
 }
@@ -408,7 +421,20 @@ class FinanceTransaction {
         'updatedAt': updatedAt.millisecondsSinceEpoch,
       };
 
-  FinanceTransaction copyWith({String? status, String? description, String? notes, String? categoryId, int? amountCents, DateTime? date, String? accountId, String? paymentMethod, String? fingerprint}) {
+  FinanceTransaction copyWith({
+    String? status,
+    String? description,
+    String? notes,
+    String? categoryId,
+    int? amountCents,
+    DateTime? date,
+    String? accountId,
+    String? paymentMethod,
+    String? fingerprint,
+    String? recurringId,
+    String? periodKey,
+    bool updateRecurring = false,
+  }) {
     return FinanceTransaction(
       id: id,
       userId: userId,
@@ -424,8 +450,8 @@ class FinanceTransaction {
       paymentMethod: paymentMethod ?? this.paymentMethod,
       notes: notes ?? this.notes,
       status: status ?? this.status,
-      recurringId: recurringId,
-      periodKey: periodKey,
+      recurringId: updateRecurring ? recurringId : this.recurringId,
+      periodKey: updateRecurring ? periodKey : this.periodKey,
       installmentNumber: installmentNumber,
       installmentCount: installmentCount,
       fingerprint: fingerprint ?? this.fingerprint,
@@ -698,6 +724,9 @@ class RecurringItem {
     required this.notes,
     required this.createdAt,
     required this.updatedAt,
+    this.kind = 'expense',
+    this.variable = false,
+    this.startsOn,
   });
 
   factory RecurringItem.fromJson(Map<String, dynamic> json) {
@@ -718,6 +747,9 @@ class RecurringItem {
       notes: map.str('notes'),
       createdAt: map.date('createdAt'),
       updatedAt: map.date('updatedAt'),
+      kind: map.str('kind', 'expense'),
+      variable: map.boolean('variable'),
+      startsOn: map.optionalDate('startsOn'),
     );
   }
 
@@ -736,6 +768,9 @@ class RecurringItem {
   final String notes;
   final DateTime createdAt;
   final DateTime updatedAt;
+  final String kind;
+  final bool variable;
+  final DateTime? startsOn;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -753,6 +788,9 @@ class RecurringItem {
         'notes': notes,
         'createdAt': createdAt.millisecondsSinceEpoch,
         'updatedAt': updatedAt.millisecondsSinceEpoch,
+        'kind': kind,
+        'variable': variable,
+        'startsOn': startsOn?.millisecondsSinceEpoch,
       };
 }
 

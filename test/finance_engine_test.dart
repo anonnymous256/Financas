@@ -270,4 +270,233 @@ void main() {
       throwsA(isA<AppException>()),
     );
   });
+
+  test('receita variável soma mensalidades de valores diferentes', () {
+    final bundle = UserBundle.empty('user-a');
+    bundle.profile = UserProfile.create(userId: 'user-a', name: 'Ana Silva', email: 'ana@test.com');
+    FinanceEngine.seedCategories(bundle);
+    FinanceEngine.upsertAccount(
+      bundle,
+      BankAccount(
+        id: 'acc_ana',
+        userId: 'user-a',
+        name: 'Nubank',
+        bank: 'Nubank',
+        type: 'checking',
+        initialBalanceCents: 50000,
+        balanceCents: 50000,
+        color: 0xFF7C3AED,
+        icon: 'account_balance',
+        createdAt: DateTime(2026, 10, 1),
+        updatedAt: DateTime(2026, 10, 1),
+      ),
+    );
+    final item = FinanceEngine.upsertVariableIncome(
+      bundle,
+      name: 'Mensalidades',
+      categoryId: 'cat_freelance',
+      accountId: 'acc_ana',
+      dueDay: 10,
+    );
+    expect(item.variable, isTrue);
+    expect(item.kind, TxKind.income);
+    expect(item.amountCents, 0);
+    final restored = RecurringItem.fromJson(item.toJson());
+    expect(restored.variable, isTrue);
+    expect(restored.kind, TxKind.income);
+    final legacy = RecurringItem.fromJson({
+      'id': 'old',
+      'userId': 'user-a',
+      'name': 'Internet',
+      'amountCents': 8000,
+      'categoryId': 'cat_subs',
+      'dueDay': 5,
+      'accountId': 'acc_ana',
+      'frequency': 'monthly',
+      'paymentMethod': 'pix',
+      'active': true,
+      'createdAt': DateTime(2026, 10, 1).millisecondsSinceEpoch,
+      'updatedAt': DateTime(2026, 10, 1).millisecondsSinceEpoch,
+    });
+    expect(legacy.variable, isFalse);
+    expect(legacy.kind, 'expense');
+
+    FinanceEngine.generateRecurring(bundle, now: DateTime(2026, 10, 20));
+    expect(bundle.transactions, isEmpty);
+
+    FinanceEngine.addIncome(
+      bundle,
+      description: 'Mensalidades • Ana',
+      amountCents: 15000,
+      date: DateTime(2026, 10, 10),
+      categoryId: 'cat_freelance',
+      accountId: 'acc_ana',
+      recurringId: item.id,
+      periodKey: '2026-10',
+    );
+    FinanceEngine.addIncome(
+      bundle,
+      description: 'Mensalidades • Bruno',
+      amountCents: 22000,
+      date: DateTime(2026, 10, 12),
+      categoryId: 'cat_freelance',
+      accountId: 'acc_ana',
+      recurringId: item.id,
+      periodKey: '2026-10',
+    );
+    final period = periodOf(DateTime(2026, 10, 15), 1);
+    expect(bundle.summaries.firstWhere((summary) => summary.id == period.key).incomeCents, 37000);
+    expect(bundle.accounts.single.balanceCents, 87000);
+    expect(bundle.transactions.where((tx) => tx.recurringId == item.id), hasLength(2));
+  });
+
+  test('salário recorrente volta pendente no mês seguinte', () {
+    final bundle = UserBundle.empty('user-a');
+    bundle.profile = UserProfile.create(userId: 'user-a', name: 'Ana Silva', email: 'ana@test.com');
+    FinanceEngine.seedCategories(bundle);
+    FinanceEngine.upsertAccount(
+      bundle,
+      BankAccount(
+        id: 'acc_ana',
+        userId: 'user-a',
+        name: 'Nubank',
+        bank: 'Nubank',
+        type: 'checking',
+        initialBalanceCents: 50000,
+        balanceCents: 50000,
+        color: 0xFF7C3AED,
+        icon: 'account_balance',
+        createdAt: DateTime(2026, 10, 1),
+        updatedAt: DateTime(2026, 10, 1),
+      ),
+    );
+    FinanceEngine.addIncome(
+      bundle,
+      description: 'Salário JS',
+      amountCents: 150000,
+      date: DateTime(2026, 10, 8),
+      categoryId: 'cat_salary',
+      accountId: 'acc_ana',
+      status: 'paid',
+      recurring: true,
+      silent: true,
+    );
+    FinanceEngine.generateRecurring(bundle, now: DateTime(2026, 11, 1));
+    final october = bundle.transactions.where((tx) => tx.periodKey == '2026-10').single;
+    final november = bundle.transactions.where((tx) => tx.periodKey == '2026-11').single;
+    expect(october.status, 'paid');
+    expect(october.amountCents, 150000);
+    expect(november.status, 'pending');
+    expect(november.description, 'Salário JS');
+    expect(november.amountCents, 150000);
+    expect(november.recurringId, october.recurringId);
+    expect(bundle.accounts.single.balanceCents, 200000);
+    FinanceEngine.generateRecurring(bundle, now: DateTime(2026, 11, 1));
+    expect(bundle.transactions.where((tx) => tx.periodKey == '2026-11'), hasLength(1));
+  });
+
+  test('receitas já cadastradas passam a repetir e voltam pendentes', () {
+    final bundle = UserBundle.empty('user-a');
+    bundle.profile = UserProfile.create(userId: 'user-a', name: 'Ana Silva', email: 'ana@test.com');
+    FinanceEngine.seedCategories(bundle);
+    FinanceEngine.upsertAccount(
+      bundle,
+      BankAccount(
+        id: 'acc_ana',
+        userId: 'user-a',
+        name: 'Nubank',
+        bank: 'Nubank',
+        type: 'checking',
+        initialBalanceCents: 0,
+        balanceCents: 0,
+        color: 0xFF7C3AED,
+        icon: 'account_balance',
+        createdAt: DateTime(2026, 10, 1),
+        updatedAt: DateTime(2026, 10, 1),
+      ),
+    );
+    FinanceEngine.addIncome(
+      bundle,
+      description: 'Salário JS',
+      amountCents: 150000,
+      date: DateTime(2026, 10, 8),
+      categoryId: 'cat_salary',
+      accountId: 'acc_ana',
+      status: 'paid',
+      silent: true,
+    );
+    expect(bundle.recurring.where((item) => item.kind == TxKind.income && !item.variable), isEmpty);
+    FinanceEngine.generateRecurring(bundle, now: DateTime(2026, 11, 1));
+    expect(bundle.profile.fixedIncomesAdopted, isTrue);
+    final november = bundle.transactions.where((tx) => tx.periodKey == '2026-11').single;
+    expect(november.status, 'pending');
+    expect(november.description, 'Salário JS');
+    expect(bundle.transactions.where((tx) => tx.periodKey == '2026-10').single.status, 'paid');
+    expect(bundle.accounts.single.balanceCents, 150000);
+  });
+
+  test('seguro do carro fica recorrente só a partir do mês seguinte', () {
+    final bundle = UserBundle.empty('user-a');
+    bundle.profile = UserProfile.create(userId: 'user-a', name: 'Ana Silva', email: 'ana@test.com');
+    bundle.profile = bundle.profile.copyWith(fixedIncomesAdopted: true);
+    FinanceEngine.seedCategories(bundle);
+    FinanceEngine.upsertAccount(
+      bundle,
+      BankAccount(
+        id: 'acc_ana',
+        userId: 'user-a',
+        name: 'Conta Salário',
+        bank: 'Nubank',
+        type: 'checking',
+        initialBalanceCents: 0,
+        balanceCents: 0,
+        color: 0xFF7C3AED,
+        icon: 'account_balance',
+        createdAt: DateTime(2026, 10, 1),
+        updatedAt: DateTime(2026, 10, 1),
+      ),
+    );
+    final recurring = RecurringItem(
+      id: 'seguro',
+      userId: 'user-a',
+      name: 'Seguro do carro',
+      amountCents: 17600,
+      categoryId: 'cat_bills',
+      dueDay: 10,
+      dueMonth: 10,
+      accountId: 'acc_ana',
+      cardId: null,
+      frequency: 'monthly',
+      paymentMethod: 'pix',
+      active: true,
+      notes: '',
+      createdAt: DateTime(2026, 10, 1),
+      updatedAt: DateTime(2026, 10, 1),
+    );
+    bundle.recurring.add(recurring);
+    FinanceEngine.addExpense(
+      bundle,
+      description: 'Seguro do carro',
+      amountCents: 17600,
+      date: DateTime(2026, 10, 10),
+      categoryId: 'cat_bills',
+      accountId: 'acc_ana',
+      paymentMethod: 'pix',
+      status: 'pending',
+      silent: true,
+      recurringId: recurring.id,
+      periodKey: '2026-10',
+    );
+    FinanceEngine.generateRecurring(bundle, now: DateTime(2026, 10, 6));
+    expect(bundle.recurring.single.startsOn, DateTime(2026, 11, 10));
+    expect(bundle.transactions.where((tx) => tx.periodKey == '2026-10'), isEmpty);
+    final november = bundle.transactions.where((tx) => tx.periodKey == '2026-11').single;
+    expect(november.description, 'Seguro do carro');
+    expect(november.status, 'pending');
+    expect(november.amountCents, 17600);
+    FinanceEngine.deleteTransaction(bundle, november.id);
+    FinanceEngine.generateRecurring(bundle, now: DateTime(2026, 10, 6));
+    expect(bundle.transactions.where((tx) => tx.periodKey == '2026-10'), isEmpty);
+    expect(bundle.transactions.where((tx) => tx.description == 'Seguro do carro'), hasLength(1));
+  });
 }

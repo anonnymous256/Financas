@@ -258,6 +258,8 @@ class FinanceEngine {
     required String accountId,
     String notes = '',
     String status = 'paid',
+    bool recurring = false,
+    String frequency = 'monthly',
     bool allowDuplicate = false,
     bool silent = false,
     String? recurringId,
@@ -271,6 +273,32 @@ class FinanceEngine {
       throw const AppException('Escolha uma categoria de receita.');
     }
     _account(bundle, accountId);
+    String? linkedRecurring = recurringId;
+    var linkedPeriod = periodKey;
+    if (recurring) {
+      final item = RecurringItem(
+        id: newId(),
+        userId: bundle.profile.userId,
+        name: description.trim(),
+        amountCents: amountCents,
+        categoryId: categoryId,
+        dueDay: date.day.clamp(1, 28),
+        dueMonth: date.month,
+        accountId: accountId,
+        cardId: null,
+        frequency: frequencyLabels.containsKey(frequency) ? frequency : 'monthly',
+        paymentMethod: 'pix',
+        active: true,
+        notes: notes.trim(),
+        createdAt: date,
+        updatedAt: DateTime.now(),
+        kind: TxKind.income,
+        variable: false,
+      );
+      bundle.recurring.add(item);
+      linkedRecurring = item.id;
+      linkedPeriod = periodKeyFor(item, date);
+    }
     final fingerprint = fingerprintOf(
       kind: TxKind.income,
       description: description,
@@ -296,8 +324,8 @@ class FinanceEngine {
       paymentMethod: 'pix',
       notes: notes.trim(),
       status: status,
-      recurringId: recurringId,
-      periodKey: periodKey,
+      recurringId: linkedRecurring,
+      periodKey: linkedPeriod,
       installmentNumber: null,
       installmentCount: null,
       fingerprint: fingerprint,
@@ -314,7 +342,11 @@ class FinanceEngine {
         type: 'incomeAdded',
       );
     }
-    rebuild(bundle);
+    if (recurring) {
+      generateRecurring(bundle);
+    } else {
+      rebuild(bundle);
+    }
   }
 
   static void addExpense(
@@ -784,10 +816,56 @@ class FinanceEngine {
     rebuild(bundle);
   }
 
+  static RecurringItem upsertVariableIncome(
+    UserBundle bundle, {
+    String? id,
+    required String name,
+    required String categoryId,
+    required String accountId,
+    required int dueDay,
+    String frequency = 'monthly',
+    String notes = '',
+    bool active = true,
+    DateTime? createdAt,
+  }) {
+    final now = DateTime.now();
+    final item = RecurringItem(
+      id: id ?? newId(),
+      userId: bundle.profile.userId,
+      name: name.trim(),
+      amountCents: 0,
+      categoryId: categoryId,
+      dueDay: dueDay,
+      dueMonth: now.month,
+      accountId: accountId,
+      cardId: null,
+      frequency: frequencyLabels.containsKey(frequency) ? frequency : 'monthly',
+      paymentMethod: 'pix',
+      active: active,
+      notes: notes.trim(),
+      createdAt: createdAt ?? now,
+      updatedAt: now,
+      kind: TxKind.income,
+      variable: true,
+    );
+    upsertRecurring(bundle, item);
+    return item;
+  }
+
   static void upsertRecurring(UserBundle bundle, RecurringItem item) {
     _requireText(item.name, 'O nome');
-    _positive(item.amountCents);
-    _category(bundle, item.categoryId);
+    final category = _category(bundle, item.categoryId);
+    if (item.variable) {
+      if (item.kind != TxKind.income) {
+        throw const AppException('Receita variável precisa ser uma receita.');
+      }
+      if (category.kind != TxKind.income) {
+        throw const AppException('Escolha uma categoria de receita.');
+      }
+      if (item.amountCents < 0) throw const AppException('O valor deve ser maior que zero.');
+    } else {
+      _positive(item.amountCents);
+    }
     if (!frequencyLabels.containsKey(item.frequency)) {
       throw const AppException('Escolha a frequência da conta.');
     }
@@ -813,10 +891,101 @@ class FinanceEngine {
     bundle.recurring.removeWhere((item) => item.id == id);
   }
 
+  static void adoptFixedIncomes(UserBundle bundle) {
+    if (bundle.profile.fixedIncomesAdopted) return;
+    final loose = bundle.transactions.where((transaction) {
+      if (transaction.kind != TxKind.income || transaction.recurringId != null) return false;
+      if (transaction.accountId == null || transaction.categoryId == null) return false;
+      final category = bundle.categories.where((item) => item.id == transaction.categoryId).firstOrNull;
+      return category != null && category.kind == TxKind.income;
+    }).toList();
+    final groups = <String, List<FinanceTransaction>>{};
+    for (final transaction in loose) {
+      final key = '${transaction.description.trim().toLowerCase()}|${transaction.categoryId}|${transaction.accountId}';
+      groups.putIfAbsent(key, () => []).add(transaction);
+    }
+    for (final group in groups.values) {
+      group.sort((a, b) => a.date.compareTo(b.date));
+      final latest = group.last;
+      final item = RecurringItem(
+        id: newId(),
+        userId: bundle.profile.userId,
+        name: latest.description.trim(),
+        amountCents: latest.amountCents,
+        categoryId: latest.categoryId!,
+        dueDay: latest.date.day.clamp(1, 28),
+        dueMonth: latest.date.month,
+        accountId: latest.accountId,
+        cardId: null,
+        frequency: 'monthly',
+        paymentMethod: 'pix',
+        active: true,
+        notes: latest.notes,
+        createdAt: group.first.date,
+        updatedAt: DateTime.now(),
+        kind: TxKind.income,
+        variable: false,
+      );
+      bundle.recurring.add(item);
+      final ids = group.map((transaction) => transaction.id).toSet();
+      bundle.transactions = bundle.transactions.map((transaction) {
+        if (!ids.contains(transaction.id)) return transaction;
+        return transaction.copyWith(
+          recurringId: item.id,
+          periodKey: periodKeyFor(item, transaction.date),
+          updateRecurring: true,
+        );
+      }).toList();
+    }
+    bundle.profile = bundle.profile.copyWith(fixedIncomesAdopted: true, updatedAt: DateTime.now());
+  }
+
+  static void deferCarInsurance(UserBundle bundle, {DateTime? now}) {
+    final clock = now ?? DateTime.now();
+    final index = bundle.recurring.indexWhere(
+      (item) => item.name.trim().toLowerCase() == 'seguro do carro' && item.startsOn == null,
+    );
+    if (index < 0) return;
+    final item = bundle.recurring[index];
+    final start = clampedDate(clock.year, clock.month + 1, item.dueDay);
+    bundle.recurring[index] = RecurringItem(
+      id: item.id,
+      userId: item.userId,
+      name: item.name,
+      amountCents: item.amountCents,
+      categoryId: item.categoryId,
+      dueDay: item.dueDay,
+      dueMonth: item.dueMonth,
+      accountId: item.accountId,
+      cardId: item.cardId,
+      frequency: item.frequency,
+      paymentMethod: item.paymentMethod,
+      active: item.active,
+      notes: item.notes,
+      createdAt: item.createdAt,
+      updatedAt: DateTime.now(),
+      kind: item.kind,
+      variable: item.variable,
+      startsOn: start,
+    );
+    final name = item.name.trim().toLowerCase();
+    bundle.purchases.removeWhere(
+      (purchase) => purchase.id.startsWith('rec_${item.id}_') && dateOnly(purchase.date).isBefore(start),
+    );
+    bundle.transactions.removeWhere((transaction) {
+      if (transaction.status == 'paid' || !dateOnly(transaction.date).isBefore(start)) return false;
+      if (transaction.recurringId == item.id) return true;
+      if (transaction.purchaseId != null && transaction.purchaseId!.startsWith('rec_${item.id}_')) return true;
+      return transaction.kind == TxKind.expense && transaction.description.trim().toLowerCase() == name;
+    });
+  }
+
   static void generateRecurring(UserBundle bundle, {DateTime? now}) {
+    adoptFixedIncomes(bundle);
+    deferCarInsurance(bundle, now: now);
     final clock = now ?? DateTime.now();
     final horizon = dateOnly(clock).add(const Duration(days: 35));
-    for (final item in List<RecurringItem>.from(bundle.recurring.where((entry) => entry.active))) {
+    for (final item in List<RecurringItem>.from(bundle.recurring.where((entry) => entry.active && !entry.variable))) {
       for (final date in occurrences(item, horizon, limit: 18)) {
         final key = periodKeyFor(item, date);
         final exists = bundle.transactions.any((tx) => tx.recurringId == item.id && tx.periodKey == key) ||
@@ -863,6 +1032,22 @@ class FinanceEngine {
                 updatedAt: tx.updatedAt,
               );
             }).toList();
+          } else if (item.kind == TxKind.income && item.accountId != null) {
+            addIncome(
+              bundle,
+              description: item.name,
+              amountCents: item.amountCents,
+              date: date,
+              categoryId: item.categoryId,
+              accountId: item.accountId!,
+              notes: item.notes,
+              status: 'pending',
+              allowDuplicate: true,
+              silent: true,
+              recurringId: item.id,
+              periodKey: key,
+              id: 'rec_${item.id}_$key',
+            );
           } else if (item.accountId != null) {
             addExpense(
               bundle,
@@ -1045,8 +1230,10 @@ class FinanceEngine {
           _notify(
             bundle,
             id: 'bill_${item.id}_${periodKeyFor(item, next)}',
-            title: 'Conta vencendo',
-            body: '${item.name} • ${formatMoney(item.amountCents)} em ${formatDay(next)}',
+            title: item.variable ? 'Receita variável' : 'Conta vencendo',
+            body: item.variable
+                ? '${item.name} • informe o valor recebido em ${formatDay(next)}'
+                : '${item.name} • ${formatMoney(item.amountCents)} em ${formatDay(next)}',
             type: 'billDue',
           );
         }
@@ -1107,7 +1294,10 @@ class FinanceEngine {
   }
 
   static List<DateTime> occurrences(RecurringItem item, DateTime horizon, {int limit = 18}) {
-    final start = dateOnly(item.createdAt);
+    var start = dateOnly(item.createdAt);
+    if (item.startsOn != null && dateOnly(item.startsOn!).isAfter(start)) {
+      start = dateOnly(item.startsOn!);
+    }
     final end = dateOnly(horizon);
     final dates = <DateTime>[];
     if (item.frequency == 'weekly') {

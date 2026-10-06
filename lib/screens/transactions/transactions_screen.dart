@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/constants/defaults.dart';
 import '../../core/constants/icons.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/app_exception.dart';
@@ -28,6 +29,7 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
   final _search = TextEditingController();
   Timer? _debounce;
   TxPage? _page;
+  List<FinanceTransaction> _periodIncomes = const [];
   var _loading = true;
   String? _error;
   var _prepared = false;
@@ -49,10 +51,16 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
     try {
       await ref.read(financeActionsProvider).run((bundle) => FinanceEngine.setPaymentStatus(bundle, item.id, status));
       if (!mounted) return;
-      if (status == 'paid' && item.recurringId != null) {
+      if (status == 'paid' && item.kind == TxKind.income && item.recurringId != null) {
+        showSuccess(context, 'Recebida. No próximo mês ela volta como pendente.');
+      } else if (status == 'paid' && item.recurringId != null) {
         showSuccess(context, 'Paga. Esta conta volta no próximo mês.');
+      } else if (status == 'paid' && item.kind == TxKind.income) {
+        showSuccess(context, 'Receita marcada como recebida.');
       } else if (status == 'paid') {
         showSuccess(context, 'Despesa marcada como paga.');
+      } else if (item.kind == TxKind.income) {
+        showSuccess(context, 'Receita voltou para pendente.');
       } else {
         showSuccess(context, 'Despesa voltou para pendente.');
       }
@@ -89,9 +97,16 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
     });
     try {
       final page = await ref.read(financeRepositoryProvider).queryTransactions(uid, _filter);
+      var periodIncomes = const <FinanceTransaction>[];
+      if (widget.fixedKind == TxKind.income) {
+        final wide = TxFilter(from: _filter.from, to: _filter.to, kind: TxKind.income, page: 1, pageSize: 500);
+        final all = await ref.read(financeRepositoryProvider).queryTransactions(uid, wide);
+        periodIncomes = all.items;
+      }
       if (mounted) {
         setState(() {
           _page = page;
+          _periodIncomes = periodIncomes;
           _loading = false;
         });
       }
@@ -127,13 +142,16 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
       TxKind.expense => 'Despesas',
       _ => 'Transações',
     };
+    final subtitle = widget.fixedKind == TxKind.income
+        ? 'Receitas fixas se repetem todo mês e voltam pendentes. As variáveis mudam de valor.'
+        : 'Busque, filtre e organize suas movimentações.';
     final kind = widget.fixedKind ?? TxKind.expense;
     final narrow = MediaQuery.sizeOf(context).width < 720;
     final categoryList = categories.where((item) => widget.fixedKind == null || item.kind == widget.fixedKind).toList();
     final activeFilters = _activeFilterCount();
     return PageFrame(
       title: title,
-      subtitle: 'Busque, filtre e organize suas movimentações.',
+      subtitle: subtitle,
       scroll: false,
       actions: [
         if (narrow)
@@ -151,6 +169,12 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
           icon: const Icon(Icons.add),
           label: Text(widget.fixedKind == TxKind.income ? 'Nova receita' : 'Nova despesa'),
         ),
+        if (widget.fixedKind == TxKind.income)
+          OutlinedButton.icon(
+            onPressed: () => showMovementForm(context, kind: TxKind.income, variableIncome: true),
+            icon: const Icon(Icons.payments_outlined),
+            label: const Text('Receita variável'),
+          ),
         if (widget.fixedKind == TxKind.expense)
           OutlinedButton.icon(
             onPressed: _payMonth,
@@ -253,23 +277,132 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
     _load();
   }
 
+  List<RecurringItem> get _variableIncomes {
+    if (widget.fixedKind != TxKind.income) return const [];
+    final items = ref.watch(recurringProvider).value ?? const <RecurringItem>[];
+    return items.where((item) => item.variable && item.kind == TxKind.income).toList();
+  }
+
+  Widget? _variablePanel(String currency) {
+    final templates = _variableIncomes;
+    if (templates.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        children: [
+          for (final item in templates) ...[
+            _variableCard(item, currency),
+            const SizedBox(height: 10),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _variableCard(RecurringItem item, String currency) {
+    final payments = _periodIncomes.where((entry) => entry.recurringId == item.id).toList();
+    final total = payments.fold<int>(0, (sum, entry) => sum + entry.amountCents);
+    final countLabel = switch (payments.length) {
+      0 => 'Nenhuma mensalidade neste período',
+      1 => '1 mensalidade neste período',
+      _ => '${payments.length} mensalidades neste período',
+    };
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.payments_outlined, color: incomeColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+                ),
+                PopupMenuButton<String>(
+                  onSelected: (value) async {
+                    if (value == 'edit') {
+                      showMovementForm(context, kind: TxKind.income, variableTemplate: item);
+                    } else if (value == 'delete') {
+                      final ok = await confirmAction(
+                        context,
+                        title: 'Excluir receita variável',
+                        message: 'As mensalidades já lançadas permanecem.',
+                        confirmLabel: 'Excluir',
+                        destructive: true,
+                      );
+                      if (!ok || !mounted) return;
+                      try {
+                        await ref.read(financeActionsProvider).run((bundle) => FinanceEngine.deleteRecurring(bundle, item.id));
+                        if (mounted) showSuccess(context, 'Receita variável excluída.');
+                      } catch (error) {
+                        if (mounted) showError(context, friendlyError(error));
+                      }
+                    }
+                  },
+                  itemBuilder: (context) => const [
+                    PopupMenuItem(value: 'edit', child: Text('Editar')),
+                    PopupMenuItem(value: 'delete', child: Text('Excluir')),
+                  ],
+                ),
+              ],
+            ),
+            Text(
+              '${frequencyLabels[item.frequency] ?? item.frequency} • dia ${item.dueDay} • ${item.active ? 'Valor variável' : 'Pausada'}',
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
+            ),
+            const SizedBox(height: 8),
+            Text(formatMoney(total, currency: currency), style: const TextStyle(fontWeight: FontWeight.w800, color: incomeColor, fontSize: 18)),
+            Text(countLabel),
+            if (item.active) ...[
+              const SizedBox(height: 8),
+              FilledButton.tonalIcon(
+                onPressed: () => showVariablePaymentForm(context, item),
+                icon: const Icon(Icons.add),
+                label: const Text('Lançar mensalidade'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _body(String currency, List<FinanceCategory> categories, List<BankAccount> accounts, List<CreditCardAccount> cards) {
     if (_loading) return const SkeletonList();
     if (_error != null) return ErrorState(message: _error!, onRetry: _load);
     final items = _page?.items ?? const <FinanceTransaction>[];
+    final variablePanel = _variablePanel(currency);
+    final activeVariable = _variableIncomes.where((item) => item.active).toList();
     if (items.isEmpty) {
-      return EmptyState(
-        icon: Icons.receipt_long_outlined,
-        title: 'Você ainda não possui nenhuma transação.',
-        message: 'Adicione uma receita ou despesa para começar.',
-        action: FilledButton(
-          onPressed: () => showMovementForm(context, kind: widget.fixedKind ?? TxKind.expense),
-          child: const Text('+ Adicionar transação'),
-        ),
+      return Column(
+        children: [
+          ?variablePanel,
+          Expanded(
+            child: EmptyState(
+              icon: Icons.receipt_long_outlined,
+              title: variablePanel == null ? 'Você ainda não possui nenhuma transação.' : 'Nenhuma mensalidade neste período.',
+              message: variablePanel == null
+                  ? 'Adicione uma receita ou despesa para começar.'
+                  : 'Lance o valor recebido na receita variável.',
+              action: activeVariable.isEmpty
+                  ? FilledButton(
+                      onPressed: () => showMovementForm(context, kind: widget.fixedKind ?? TxKind.expense),
+                      child: const Text('+ Adicionar transação'),
+                    )
+                  : FilledButton(
+                      onPressed: () => showVariablePaymentForm(context, activeVariable.first),
+                      child: const Text('Lançar mensalidade'),
+                    ),
+            ),
+          ),
+        ],
       );
     }
     return Column(
       children: [
+        ?variablePanel,
         if (_page?.truncated == true)
           const Padding(
             padding: EdgeInsets.only(bottom: 8),
@@ -317,7 +450,9 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
               );
               final pay = item.kind == TxKind.expense && item.status != 'paid'
                   ? TextButton(onPressed: () => _mark(item, 'paid'), child: const Text('Pagar'))
-                  : null;
+                  : item.kind == TxKind.income && item.status != 'paid'
+                      ? TextButton(onPressed: () => _mark(item, 'paid'), child: const Text('Receber'))
+                      : null;
               final avatar = CircleAvatar(
                 backgroundColor: Color(category?.color ?? 0xFF64748B).withValues(alpha: 0.15),
                 child: Icon(iconFor(category?.icon ?? 'more_horiz'), color: Color(category?.color ?? 0xFF64748B)),

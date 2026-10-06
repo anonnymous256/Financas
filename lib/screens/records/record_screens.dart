@@ -429,15 +429,19 @@ class RecurringScreen extends ConsumerWidget {
         loading: () => const SkeletonList(),
         error: (error, _) => ErrorState(message: friendlyError(error), onRetry: () => ref.invalidate(recurringProvider)),
         data: (list) {
-          if (list.isEmpty) {
+          final visible = list.where((item) => !item.variable).toList();
+          if (visible.isEmpty) {
             return EmptyState(icon: Icons.event_repeat, title: 'Nenhuma conta recorrente', message: 'Cadastre Netflix, aluguel, internet ou academia.', action: FilledButton(onPressed: () => showRecurringForm(context), child: const Text('+ Adicionar')));
           }
           return Column(
-            children: list.map((item) {
+            children: visible.map((item) {
               return Card(
                 child: ListTile(
                   title: Text(item.name, style: const TextStyle(fontWeight: FontWeight.w700)),
-                  subtitle: Text('${frequencyLabels[item.frequency] ?? item.frequency} • dia ${item.dueDay} • ${item.active ? 'Ativa' : 'Pausada'}'),
+                  subtitle: Text(
+                    '${item.kind == 'income' ? 'Receita' : 'Despesa'} • ${frequencyLabels[item.frequency] ?? item.frequency} • dia ${item.dueDay} • ${item.active ? 'Ativa' : 'Pausada'}'
+                    '${item.startsOn == null ? '' : ' • a partir de ${formatDay(item.startsOn!)}'}',
+                  ),
                   trailing: Wrap(
                     crossAxisAlignment: WrapCrossAlignment.center,
                     spacing: 8,
